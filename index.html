@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tiny Maxwell 1-D FDTD</title>
+<style>
+ html,body{margin:0;height:100%;display:flex;justify-content:center;align-items:center;background:#101010;color:#ddd;font:14px/1 monospace}
+ canvas   {image-rendering:pixelated;box-shadow:0 0 8px #000}
+ #ui      {position:fixed;bottom:1em;left:1em;opacity:.8}
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div id="ui">space = pause/resume</div>
+
+<script>
+(() => {
+  /* ---------- physical & numerical params ---------- */
+  const N          = 600;       // cell count
+  const dx         = 1;         // → treat as 1 cm (unitless)
+  const c          = 1;         // set c = 1 cell/step (=> Courant = 1)
+  const dt         = dx / c;    // time-step
+  const maxTime    = 4 * N;     // total steps
+  const sigmaMax   = 0.015;     // strength of PML (0 = reflecting)
+  const lossStart  = 0.0;       // 0..1 fraction of grid where loss begins
+  const lossSigma  = 0.002;     // bulk conductivity if you want attenuation
+
+  /* ---------- fields & material arrays ---------- */
+  const Ez = new Float32Array(N);
+  const Hy = new Float32Array(N);
+  const sigmaE = new Float32Array(N);  // electric conductivity (losses)
+  const sigmaH = new Float32Array(N);  // magnetic conductivity (PML)
+
+  // build simple PML ±10% ends + optional uniform loss
+  const pmlWidth = Math.floor(N * 0.1);
+  for (let i = 0; i < N; ++i) {
+    const p = i < pmlWidth ? (pmlWidth - i) / pmlWidth
+            : i >= N - pmlWidth ? (i - (N - pmlWidth - 1)) / pmlWidth
+            : 0;
+    sigmaE[i] = p * sigmaMax + (i > N*lossStart ? lossSigma : 0);
+    sigmaH[i] = p * sigmaMax;
+  }
+
+  /* ---------- canvas setup ---------- */
+  const cvs = document.getElementById('view');
+  cvs.width  = N;          // one pixel per Yee cell
+  cvs.height = 200;        // tall so fields are visible
+  const ctx  = cvs.getContext('2d');
+  const img  = ctx.createImageData(N, cvs.height);
+
+  /* ---------- helpers ---------- */
+  const draw = () => {
+    const h = cvs.height/2;
+    for (let x=0; x<N; ++x) {
+      const e = Ez[x];
+      const y = Math.round(h - e * h);      // scale: ±1 → full height
+      for (let j=0;j<cvs.height;++j){
+        const p = (j*N + x)*4;
+        const on = j===y;
+        img.data[p]   = on ? 255 : 32;      // red line for Ez
+        img.data[p+1] = on ? 128 : 32;
+        img.data[p+2] = on ? 128 : 32;
+        img.data[p+3] = 255;
+      }
+    }
+    ctx.putImageData(img,0,0);
+  };
+
+  /* ---------- main loop ---------- */
+  let n = 0, running = true;
+  const step = () => {
+    if (!running) return requestAnimationFrame(step);
+
+    /* update Hy ½ */
+    for (let i=0; i<N-1; ++i)
+      Hy[i] += (Ez[i+1]-Ez[i]) * dt/dx - sigmaH[i]*Hy[i]*dt;
+
+    /* source: a single-cycle Gaussian at grid centre */
+    const srcPos = Math.floor(N/2);
+    const t0 = 30;
+    const spread = 8;
+    const pulse = Math.exp(-0.5*((n-t0)/spread)**2);
+    Hy[srcPos-1] -= pulse * 0.5;   // magnetic half-source
+    Ez[srcPos]   += pulse;         // electric source
+
+    /* update Ez n+1 */
+    for (let i=1; i<N; ++i)
+      Ez[i] += (Hy[i] - Hy[i-1]) * dt/dx - sigmaE[i]*Ez[i]*dt;
+
+    draw();
+    if (++n < maxTime) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+
+  /* ---------- pause/resume ---------- */
+  window.addEventListener('keydown', e=>{
+    if(e.code==='Space'){ running = !running; if(running) step(); }
+  });
+})();
+</script>
+</body>
+</html>
