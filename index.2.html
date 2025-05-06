@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tiny Maxwell 1-D FDTD — periodic ring</title>
+<style>
+ html,body{margin:0;height:100%;display:flex;justify-content:center;align-items:center;background:#101010;color:#ddd;font:14px/1 monospace}
+ canvas   {image-rendering:pixelated;box-shadow:0 0 8px #000}
+ #ui      {position:fixed;bottom:1em;left:1em;opacity:.8}
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div id="ui">space = pause/resume</div>
+
+<script>
+(() => {
+  /* ---------- physical & numerical params ---------- */
+  const N          = 600;       // Yee cells (ring length)
+  const dx         = 1;         // 1 unit/cell
+  const c          = 1;         // set c = 1 cell/step  (Courant = 1)
+  const dt         = dx / c;    // time step
+  const maxTime    = 4 * N;     // total steps to run
+
+  /* ---------- fields ---------- */
+  const Ez = new Float32Array(N);   // electric field  (z-component)
+  const Hy = new Float32Array(N);   // magnetic field  (y-component)
+
+  /* ---------- canvas ---------- */
+  const cvs = document.getElementById('view');
+  cvs.width  = N;             // one pixel per cell
+  cvs.height = 200;
+  const ctx  = cvs.getContext('2d');
+  const img  = ctx.createImageData(N, cvs.height);
+
+  /* ---------- drawing helper ---------- */
+  const draw = () => {
+    const h = cvs.height / 2;
+    for (let x = 0; x < N; ++x) {
+      const e = Ez[x];
+      const y = Math.round(h - e * h);       // scale: ±1 → canvas height
+      for (let j = 0; j < cvs.height; ++j) {
+        const p = (j * N + x) * 4;
+        const on = j === y;
+        img.data[p]   = on ? 255 : 32;       // red trace for Ez
+        img.data[p+1] = on ? 128 : 32;
+        img.data[p+2] = on ? 128 : 32;
+        img.data[p+3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  };
+
+  /* ---------- main time-stepping ---------- */
+  let n = 0, running = true;
+  const step = () => {
+    if (!running) return requestAnimationFrame(step);
+
+    /* --- update Hy at n+½  ( periodic ∂zEz ) --- */
+    for (let i = 0; i < N; ++i) {
+      const ip1 = (i + 1) % N;                    // wrap-around
+      Hy[i] += (Ez[ip1] - Ez[i]) * dt / dx;
+    }
+
+    /* --- Gaussian source injected once --- */
+    const srcPos = Math.floor(N / 2);
+    const t0 = 30, spread = 8;
+    const pulse = Math.exp(-0.5 * ((n - t0) / spread) ** 2);
+    Hy[(srcPos - 1 + N) % N] -= 0.5 * pulse;      // half-cycle in Hy
+    Ez[srcPos]               +=       pulse;      // full in Ez
+
+    /* --- update Ez at n+1  ( periodic ∂yHy ) --- */
+    for (let i = 0; i < N; ++i) {
+      const im1 = (i - 1 + N) % N;                // wrap-around
+      Ez[i] += (Hy[i] - Hy[im1]) * dt / dx;
+    }
+
+    draw();
+    if (++n < maxTime) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+
+  /* ---------- pause / resume ---------- */
+  window.addEventListener('keydown', e => {
+    if (e.code === 'Space') { running = !running; if (running) step(); }
+  });
+})();
+</script>
+</body>
+</html>
