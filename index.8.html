@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tiny Maxwell 1-D FDTD — periodic ring, two counter-propagating pulses</title>
+<!--
+────────────────────────────────────────────────────────────────────────────
+OVERVIEW
+────────────────────────────────────────────────────────────────────────────
+• One-dimensional transverse-electromagnetic (TEM) FDTD simulation  
+  on a closed ring (periodic boundary).  
+• A short Gaussian excitation is **added** (not overwritten) to the fields,  
+  so it naturally decomposes into **two** equal-and-opposite pulses.  
+  – That is why you see *two* peaks racing in opposite directions.  
+• When a pulse completes a full lap, its leading edge meets its own tail at
+  the left/right wrap-around pixel; the samples **add** and the trace looks
+  twice as tall there — classic self-interference, not a bug.  
+
+References  
+• Maxwell’s equations  https://en.wikipedia.org/wiki/Maxwell%27s_equations  
+• Yee lattice      https://en.wikipedia.org/wiki/Yee_lattice  
+• FDTD method      https://en.wikipedia.org/wiki/Finite-difference_time-domain_method  
+• CFL condition      https://en.wikipedia.org/wiki/Courant%E2%80%93Friedrichs%E2%80%93Lewy_condition  
+
+USER CONTROLS  
+• **Space bar** — pause / resume (no speed-up on resume)  
+────────────────────────────────────────────────────────────────────────────
+-->
+<style>
+html,body{
+  margin:0;height:100%;
+  display:flex;justify-content:center;align-items:center;
+  background:#101010;color:#ddd;font:14px/1 monospace;
+}
+canvas{image-rendering:pixelated;box-shadow:0 0 8px #000}
+#ui   {position:fixed;bottom:1em;left:1em;opacity:.8}
+</style>
+</head>
+<body>
+<canvas id="wave-canvas"></canvas>
+<div id="ui">SPACE = pause / resume</div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════════
+ * SECTION 1 — Numerical parameters
+ * ════════════════════════════════════════════════════════════════════ */
+const GRID_CELL_COUNT          = 600;   // number of Yee cells on the ring
+const DX                       = 1;     // spatial step Δx  (arbitrary units)
+const CELLS_PER_TICK           = 1;     // choose c so Courant number = 1
+const DT                       = DX / CELLS_PER_TICK;  // time step Δt
+const DISPLAY_SCALE            = 0.7;  // cosmetic: keeps trace inside canvas
+const RUN_FOREVER              = Number.POSITIVE_INFINITY;
+
+/* ════════════════════════════════════════════════════════════════════════
+ * SECTION 2 — Field arrays (Ez on cell centres, Hy on edges)
+ * ════════════════════════════════════════════════════════════════════ */
+const Ez = new Float32Array(GRID_CELL_COUNT); // electric field  E_z(i)
+const Hy = new Float32Array(GRID_CELL_COUNT); // magnetic field  H_y(i+½)
+
+/* ════════════════════════════════════════════════════════════════════════
+ * SECTION 3 — Canvas initialisation
+ * ════════════════════════════════════════════════════════════════════ */
+const canvas = document.getElementById('wave-canvas');
+canvas.width  = GRID_CELL_COUNT;   // 1 pixel per Yee cell for clarity
+canvas.height = 200;               // vertical resolution for trace
+const ctx   = canvas.getContext('2d');
+const img   = ctx.createImageData(canvas.width, canvas.height);
+
+/* Draw Ez as a red trace */
+function drawEzTrace () {
+  const h = canvas.height / 2;
+  for (let x = 0; x < GRID_CELL_COUNT; ++x) {
+    const sample = Ez[x] * DISPLAY_SCALE;
+    const yPix   = Math.round(h - sample * h);
+
+    for (let y = 0; y < canvas.height; ++y) {
+      const p = (y * GRID_CELL_COUNT + x) * 4;
+      const isTrace = (y === yPix);
+      img.data[p]   = isTrace ? 255 :  32; // R
+      img.data[p+1] = isTrace ? 128 :  32; // G
+      img.data[p+2] = isTrace ? 128 :  32; // B
+      img.data[p+3] = 255;                 // A
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+ * SECTION 4 — Gaussian pulse source (additive)
+ * ════════════════════════════════════════════════════════════════════ */
+const SOURCE_INDEX         = Math.floor(GRID_CELL_COUNT / 2);
+const GAUSS_PEAK_TICK      = 30;   // when amplitude is maximal
+const GAUSS_STDDEV_TICKS   =  8;   // pulse width (in ticks)
+
+/** Gaussian envelope:  exp[ -½ ((t-t₀)/σ)² ] */
+function gaussianEnvelope (tick) {
+  const tau = (tick - GAUSS_PEAK_TICK) / GAUSS_STDDEV_TICKS;
+  return Math.exp(-0.5 * tau * tau);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+ * SECTION 5 — Main FDTD loop
+ * ════════════════════════════════════════════════════════════════════ */
+let tick           = 0;
+let simulationOn   = true;
+
+function timeStep () {
+
+  /* 5.1 — update H_y at n + ½:  H_i += (E_(i+1) − E_i) Δt/Δx */
+  for (let i = 0; i < GRID_CELL_COUNT; ++i) {
+    const ip1 = (i + 1) % GRID_CELL_COUNT;           // periodic wrap
+    Hy[i] += (Ez[ip1] - Ez[i]) * DT / DX;
+  }
+
+  /* 5.2 — additive soft source (spawns two counter-propagating pulses) */
+  const pulse = gaussianEnvelope(tick);
+  Hy[(SOURCE_INDEX - 1 + GRID_CELL_COUNT) % GRID_CELL_COUNT] -= 0.5 * pulse;
+  Ez[SOURCE_INDEX]                                            +=       pulse;
+
+  /* 5.3 — update E_z at n + 1:  E_i += (H_i − H_(i-1)) Δt/Δx */
+  for (let i = 0; i < GRID_CELL_COUNT; ++i) {
+    const im1 = (i - 1 + GRID_CELL_COUNT) % GRID_CELL_COUNT;
+    Ez[i] += (Hy[i] - Hy[im1]) * DT / DX;
+  }
+}
+
+/* Animation frame — one call per display refresh while running */
+function frame () {
+  if (!simulationOn) return;            // paused
+
+  if (tick < RUN_FOREVER) {
+    timeStep();
+    drawEzTrace();
+    ++tick;
+    requestAnimationFrame(frame);
+  }
+}
+
+/* Start simulation */
+requestAnimationFrame(frame);
+
+/* ════════════════════════════════════════════════════════════════════════
+ * SECTION 6 — Pause / resume
+ * ════════════════════════════════════════════════════════════════════ */
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space') {
+    simulationOn = !simulationOn;
+    if (simulationOn) requestAnimationFrame(frame);
+  }
+});
+</script>
+</body>
+</html>
