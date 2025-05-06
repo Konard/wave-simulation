@@ -20,7 +20,7 @@
   const dx         = 1;                      // 1 unit/cell
   const c          = 1;                      // set c = 1 cell/step (Courant = 1)
   const dt         = dx / c;                 // time step
-  const maxTime    = Number.POSITIVE_INFINITY;  // ← run forever
+  const maxTime    = Number.POSITIVE_INFINITY;  // run forever
 
   /* ---------- fields ---------- */
   const Ez = new Float32Array(N);            // electric field (z-component)
@@ -54,7 +54,7 @@
   /* ---------- main time-stepping ---------- */
   let n = 0, running = true;
   const step = () => {
-    if (!running) return requestAnimationFrame(step);
+    if (!running) return;                    // ← change #1 : no extra rAF while paused
 
     /* --- update Hy at n+½ (periodic ∂zEz) --- */
     for (let i = 0; i < N; ++i) {
@@ -82,7 +82,10 @@
 
   /* ---------- pause / resume ---------- */
   window.addEventListener('keydown', e => {
-    if (e.code === 'Space') { running = !running; if (running) step(); }
+    if (e.code === 'Space') {
+      running = !running;
+      if (running) requestAnimationFrame(step);   // ← change #2 : start fresh loop
+    }
   });
 })();
 </script>
