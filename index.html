@@ -16,19 +16,19 @@
 <script>
 (() => {
   /* ---------- physical & numerical params ---------- */
-  const N          = 600;       // Yee cells (ring length)
-  const dx         = 1;         // 1 unit/cell
-  const c          = 1;         // set c = 1 cell/step  (Courant = 1)
-  const dt         = dx / c;    // time step
-  const maxTime    = 4 * N;     // total steps to run
+  const N          = 600;                    // Yee cells (ring length)
+  const dx         = 1;                      // 1 unit/cell
+  const c          = 1;                      // set c = 1 cell/step (Courant = 1)
+  const dt         = dx / c;                 // time step
+  const maxTime    = Number.POSITIVE_INFINITY;  // ← run forever
 
   /* ---------- fields ---------- */
-  const Ez = new Float32Array(N);   // electric field  (z-component)
-  const Hy = new Float32Array(N);   // magnetic field  (y-component)
+  const Ez = new Float32Array(N);            // electric field (z-component)
+  const Hy = new Float32Array(N);            // magnetic field (y-component)
 
   /* ---------- canvas ---------- */
   const cvs = document.getElementById('view');
-  cvs.width  = N;             // one pixel per cell
+  cvs.width  = N;                            // one pixel per cell
   cvs.height = 200;
   const ctx  = cvs.getContext('2d');
   const img  = ctx.createImageData(N, cvs.height);
@@ -56,9 +56,9 @@
   const step = () => {
     if (!running) return requestAnimationFrame(step);
 
-    /* --- update Hy at n+½  ( periodic ∂zEz ) --- */
+    /* --- update Hy at n+½ (periodic ∂zEz) --- */
     for (let i = 0; i < N; ++i) {
-      const ip1 = (i + 1) % N;                    // wrap-around
+      const ip1 = (i + 1) % N;               // wrap-around
       Hy[i] += (Ez[ip1] - Ez[i]) * dt / dx;
     }
 
@@ -66,12 +66,12 @@
     const srcPos = Math.floor(N / 2);
     const t0 = 30, spread = 8;
     const pulse = Math.exp(-0.5 * ((n - t0) / spread) ** 2);
-    Hy[(srcPos - 1 + N) % N] -= 0.5 * pulse;      // half-cycle in Hy
-    Ez[srcPos]               +=       pulse;      // full in Ez
+    Hy[(srcPos - 1 + N) % N] -= 0.5 * pulse; // half-cycle in Hy
+    Ez[srcPos]               +=       pulse; // full in Ez
 
-    /* --- update Ez at n+1  ( periodic ∂yHy ) --- */
+    /* --- update Ez at n+1 (periodic ∂yHy) --- */
     for (let i = 0; i < N; ++i) {
-      const im1 = (i - 1 + N) % N;                // wrap-around
+      const im1 = (i - 1 + N) % N;           // wrap-around
       Ez[i] += (Hy[i] - Hy[im1]) * dt / dx;
     }
 
