@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tiny Maxwell 1-D FDTD — periodic ring, two counter-propagating pulses, zero-baseline</title>
+<!--
+────────────────────────────────────────────────────────────────────────────
+WHAT CHANGED & WHY
+────────────────────────────────────────────────────────────────────────────
+• **Symptom you saw**  
+  After many laps the single dotted baseline split into two parallel lines
+  and one of them crept upward.  That was a static (DC) electric field that
+  our *additive* Gaussian source accidentally left behind.
+
+• **Root cause**  
+  The spatial integral ∮ Ez dx is **conserved** in a periodic domain:
+      d/dt ∮ Ez dx = c² [Hy]₀ᴸ  = 0 .  
+  Every time-step we “added” a strictly‐positive Gaussian sample, so the
+  integral grew permanently.  Once the travelling pulses moved away, the
+  excess appeared as a constant offset → a second flat line.
+
+• **Fix**  
+  Inject a **zero-area bipolar pulse** instead of a monopolar one.  
+  Mathematically that is the *time-derivative of a Gaussian*  
+      f(t) = −τ exp(−½ τ²), τ = (t−t₀)/σ  
+  whose samples sum to zero, restoring the net Ez integral to 0 when the
+  source is finished.  Physics is happy, and the baseline never drifts.
+
+Everything else (two equal-and-opposite travelling waves, constructive
+interference spike at the wrap-around, pause/resume behaviour) stays
+unchanged.
+
+References  
+• Maxwell    https://en.wikipedia.org/wiki/Maxwell%27s_equations  
+• Yee lattice https://en.wikipedia.org/wiki/Yee_lattice  
+• FDTD      https://en.wikipedia.org/wiki/Finite-difference_time-domain_method  
+────────────────────────────────────────────────────────────────────────────
+-->
+<style>
+html,body{
+  margin:0;height:100%;
+  display:flex;justify-content:center;align-items:center;
+  background:#101010;color:#ddd;font:14px/1 monospace;
+}
+canvas{image-rendering:pixelated;box-shadow:0 0 8px #000}
+#ui   {position:fixed;bottom:1em;left:1em;opacity:.8}
+</style>
+</head>
+<body>
+<canvas id="wave-canvas"></canvas>
+<div id="ui">SPACE = pause / resume</div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════════
+ * SECTION 1 — Numerical constants
+ * ════════════════════════════════════════════════════════════════════ */
+const GRID_CELL_COUNT   = 600;     // Yee cells around the ring
+const DX                = 1;       // spatial step Δx
+const COURANT_NUMBER    = 1;       // choose cΔt = Δx  ⇒ no dispersion
+const DT                = DX / COURANT_NUMBER;
+const DISPLAY_SCALE     = 0.7;     // cosmetic vertical scale
+const RUN_FOREVER       = Number.POSITIVE_INFINITY;
+
+/* ════════════════════════════════════════════════════════════════════════
+ * SECTION 2 — Field arrays
+ * ════════════════════════════════════════════════════════════════════ */
+const Ez = new Float32Array(GRID_CELL_COUNT);   // electric field E_z(i)
+const Hy = new Float32Array(GRID_CELL_COUNT);   // magnetic field H_y(i+½)
+
+/* ════════════════════════════════════════════════════════════════════════
+ * SECTION 3 — Canvas setup
+ * ════════════════════════════════════════════════════════════════════ */
+const canvas = document.getElementById('wave-canvas');
+canvas.width  = GRID_CELL_COUNT;   // 1 px per cell → easiest to debug
+canvas.height = 200;               // some vertical room
+const ctx  = canvas.getContext('2d');
+const img  = ctx.createImageData(canvas.width, canvas.height);
+
+/* Render Ez as a red dotted trace */
+function drawEz () {
+  const h = canvas.height / 2;
+  for (let x = 0; x < GRID_CELL_COUNT; ++x) {
+    const sample = Ez[x] * DISPLAY_SCALE;
+    const yPix   = Math.round(h - sample * h);
+
+    for (let y = 0; y < canvas.height; ++y) {
+      const idx = (y * GRID_CELL_COUNT + x) * 4;
+      const isTrace = (y === yPix);
+      img.data[idx + 0] = isTrace ? 255 :  32; // R
+      img.data[idx + 1] = isTrace ? 128 :  32; // G
+      img.data[idx + 2] = isTrace ? 128 :  32; // B
+      img.data[idx + 3] = 255;                 // A
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+ * SECTION 4 — Zero-area bipolar source (Gaussian derivative)
+ * ════════════════════════════════════════════════════════════════════ */
+const SRC_INDEX       = Math.floor(GRID_CELL_COUNT / 2);
+const PULSE_PEAK_TICK = 30;   // centre of the Gaussian
+const PULSE_WIDTH     =  8;   // σ (in ticks)
+
+/** Time-derivative of a Gaussian:  −τ e^(−½ τ²)  (integrates to zero) */
+function bipolarPulse (t) {
+  const tau = (t - PULSE_PEAK_TICK) / PULSE_WIDTH;
+  return -tau * Math.exp(-0.5 * tau * tau);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+ * SECTION 5 — One FDTD step
+ * ════════════════════════════════════════════════════════════════════ */
+function stepFDTD (t) {
+
+  /* 5.1 — Update H_y at n+½ */
+  for (let i = 0; i < GRID_CELL_COUNT; ++i) {
+    const ip1 = (i + 1) % GRID_CELL_COUNT;
+    Hy[i] += (Ez[ip1] - Ez[i]) * DT / DX;
+  }
+
+  /* 5.2 — Inject bipolar pulse (additive, spawns L & R waves, zero DC) */
+  const pulse = bipolarPulse(t);
+  Hy[(SRC_INDEX - 1 + GRID_CELL_COUNT) % GRID_CELL_COUNT] -= 0.5 * pulse;
+  Ez[SRC_INDEX]                                            +=       pulse;
+
+  /* 5.3 — Update E_z at n+1 */
+  for (let i = 0; i < GRID_CELL_COUNT; ++i) {
+    const im1 = (i - 1 + GRID_CELL_COUNT) % GRID_CELL_COUNT;
+    Ez[i] += (Hy[i] - Hy[im1]) * DT / DX;
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+ * SECTION 6 — Animation loop with pause/resume
+ * ════════════════════════════════════════════════════════════════════ */
+let tick = 0;
+let running = true;
+
+function frame () {
+  if (!running) return;              // paused → do nothing
+  if (tick < RUN_FOREVER) {
+    stepFDTD(tick);
+    drawEz();
+    ++tick;
+    requestAnimationFrame(frame);
+  }
+}
+
+requestAnimationFrame(frame);
+
+/* Space-bar toggles simulation */
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space') {
+    running = !running;
+    if (running) requestAnimationFrame(frame);
+  }
+});
+</script>
+</body>
+</html>
