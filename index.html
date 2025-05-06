@@ -2,48 +2,47 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Tiny Maxwell 1-D FDTD — fully documented, periodic ring</title>
+<title>Tiny Maxwell 1-D FDTD — self-documenting, periodic ring (single travelling pulse)</title>
 <!--
-  A pedagogical implementation of the one–dimensional Finite-Difference
-  Time-Domain (FDTD) method on a *periodic* line (i.e. a ring).
+────────────────────────────────────────────────────────────────────────────
+PHYSICAL BACKGROUND
+────────────────────────────────────────────────────────────────────────────
+We solve the one-dimensional transverse-electromagnetic (TEM) subset of
+Maxwell’s equations on a *ring* (periodic space):
 
-  ──────────────────────────────────────────────────────────────────────────
-  PHYSICAL BACKGROUND
-  ──────────────────────────────────────────────────────────────────────────
-  We solve the 1-D Transverse-Electromagnetic (TEM) subset of
-  Maxwell's equations (see https://en.wikipedia.org/wiki/Maxwell%27s_equations)
-  using the leap-frog Yee scheme
-  (see https://en.wikipedia.org/wiki/Yee_lattice and
-       https://en.wikipedia.org/wiki/Finite-difference_time-domain_method).
+        ∂E_z/∂t =  ( 1/ε₀ ) ∂H_y/∂x
+        ∂H_y/∂t =  ( 1/μ₀ ) ∂E_z/∂x                   (vacuum, σ = 0)
 
-        ∂Ez/∂t =  ( 1/ε0 ) ∂Hy/∂x
-        ∂Hy/∂t =  ( 1/μ0 ) ∂Ez/∂x                      (free space)
+Discretisation uses the leap-frog **Yee lattice**  
+https://en.wikipedia.org/wiki/Yee_lattice  
+implemented with the classical **Finite-Difference Time-Domain (FDTD)**  
+https://en.wikipedia.org/wiki/Finite-difference_time-domain_method
 
-  In discretised form the *Courant limit*
-  (https://en.wikipedia.org/wiki/Courant%E2%80%93Friedrichs%E2%80%93Lewy_condition)
-  becomes  c Δt ≤ Δx.  We choose c Δt = Δx so the wave covers
-  exactly one grid cell per time step, eliminating numerical dispersion.
+The **Courant–Friedrichs–Lewy (CFL) condition**  
+https://en.wikipedia.org/wiki/Courant%E2%80%93Friedrichs%E2%80%93Lewy_condition  
+requires  c Δt ≤ Δx.  
+We choose c Δt = Δx so the numerical phase velocity equals the physical one
+and no dispersion appears.
 
-  ──────────────────────────────────────────────────────────────────────────
-  USER CONTROLS
-  ──────────────────────────────────────────────────────────────────────────
-  • Press <space>  →  pause / resume the simulation (no speed-up bug!)
-  --------------------------------------------------------------------------
+────────────────────────────────────────────────────────────────────────────
+USER CONTROLS
+────────────────────────────────────────────────────────────────────────────
+• **Space bar**  →  pause / resume (resumes at the *same* speed; no drift)
+────────────────────────────────────────────────────────────────────────────
 -->
 <style>
- /* Minimal styling: keep code / wave the star of the show */
- html,body {
-   margin: 0;
-   height: 100%;
-   display: flex;
-   justify-content: center;
-   align-items: center;
-   background: #101010;
-   color: #dddddd;
-   font: 14px/1 monospace;
- }
- canvas { image-rendering: pixelated; box-shadow: 0 0 8px #000; }
- #ui    { position: fixed; bottom: 1em; left: 1em; opacity: .8; }
+html,body{
+  margin:0;
+  height:100%;
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  background:#101010;
+  color:#dddddd;
+  font:14px/1 monospace;
+}
+canvas{image-rendering:pixelated;box-shadow:0 0 8px #000}
+#ui   {position:fixed;bottom:1em;left:1em;opacity:.8}
 </style>
 </head>
 <body>
@@ -51,140 +50,136 @@
 <div id="ui">SPACE = pause / resume</div>
 
 <script>
-/* ======================================================================= *
- *  SECTION 1 – Global numerical constants                                 *
- * ======================================================================= */
-const GRID_CELL_COUNT              = 600;     // number of Yee-cells forming the ring
-const SPATIAL_STEP                 = 1;       // Δx, taken as 1 arbitrary unit
-const SPEED_OF_LIGHT_CELLS_PER_TICK = 1;      // choose c so Courant = 1 ⇒ c Δt = Δx
-const TIME_STEP                    = SPATIAL_STEP / SPEED_OF_LIGHT_CELLS_PER_TICK;
-const MAX_STEPS                    = Number.POSITIVE_INFINITY; // run until user stops
+/* ════════════════════════════════════════════════════════════════════════
+ * SECTION 1 – Global numerical constants
+ * ═════════════════════════════════════════════════════════════════════ */
+const GRID_CELL_COUNT               = 600;   // number of Yee cells on the ring
+const SPATIAL_STEP                  = 1;     // Δx  (arbitrary units)
+const CELLS_TRAVELLED_PER_TICK      = 1;     // choose c so Courant = 1 → cΔt = Δx
+const TIME_STEP                     = SPATIAL_STEP / CELLS_TRAVELLED_PER_TICK;
+const MAX_STEPS                     = Number.POSITIVE_INFINITY; // run forever
 
-/* ======================================================================= *
- *  SECTION 2 – Field arrays                                               *
- * ======================================================================= *
- *  We store Ez on cell centres   (index i)
- *          Hy on cell edges      (same index i but shifted by Δx/2 in space).
- *  Both arrays are Float32Array for performance yet ample precision here. */
-const electricFieldZ = new Float32Array(GRID_CELL_COUNT); // Ez
-const magneticFieldY = new Float32Array(GRID_CELL_COUNT); // Hy
+/* Visual scale factor — keeps trace inside canvas even when pulses overlap */
+const DISPLAY_SCALE                 = 0.7;   // purely cosmetic, does not affect physics
 
-/* ======================================================================= *
- *  SECTION 3 – Canvas setup                                               *
- * ======================================================================= */
+/* ════════════════════════════════════════════════════════════════════════
+ * SECTION 2 – Field arrays  (Yee grid)
+ * ═════════════════════════════════════════════════════════════════════ */
+const electricFieldZ = new Float32Array(GRID_CELL_COUNT); // Ez(i)
+const magneticFieldY = new Float32Array(GRID_CELL_COUNT); // Hy(i + ½)
+
+/* ════════════════════════════════════════════════════════════════════════
+ * SECTION 3 – Canvas setup
+ * ═════════════════════════════════════════════════════════════════════ */
 const canvas  = document.getElementById('wave-canvas');
-canvas.width  = GRID_CELL_COUNT;  // one pixel per Yee cell → easiest debug view
-canvas.height = 200;              // vertical resolution purely for aesthetics
-const canvasContext = canvas.getContext('2d', { willReadFrequently: false });
-const imageBuffer   = canvasContext.createImageData(canvas.width, canvas.height);
+canvas.width  = GRID_CELL_COUNT;        // one pixel per cell horizontally
+canvas.height = 200;                    // vertical resolution for visual clarity
+const ctx         = canvas.getContext('2d');
+const imageBuffer = ctx.createImageData(canvas.width, canvas.height);
 
-/* Helper: render Ez as a red trace */
+/**
+ * Render Ez as a red trace down the centre of the canvas.
+ * DISPLAY_SCALE limits apparent amplitude so overlapping pulses
+ * do not clip the top/bottom edges — purely a drawing convenience.
+ */
 function renderElectricField () {
   const halfHeight = canvas.height / 2;
 
   for (let x = 0; x < GRID_CELL_COUNT; ++x) {
-    /* Map field amplitude (−1…1) to vertical pixel row */
-    const fieldSample      = electricFieldZ[x];
-    const yPixelFromCenter = Math.round(halfHeight - fieldSample * halfHeight);
+    const fieldSample = electricFieldZ[x] * DISPLAY_SCALE;
+    const yPixel      = Math.round(halfHeight - fieldSample * halfHeight);
 
     for (let y = 0; y < canvas.height; ++y) {
-      const bufferIndex = (y * GRID_CELL_COUNT + x) * 4;
+      const bufIdx = (y * GRID_CELL_COUNT + x) * 4;
+      const isTrace = (y === yPixel);
 
-      /* Simple colour scheme: red pixel where trace passes, dark grey elsewhere */
-      const isTracePixel      = (y === yPixelFromCenter);
-      imageBuffer.data[bufferIndex + 0] = isTracePixel ? 255 :  32; // R
-      imageBuffer.data[bufferIndex + 1] = isTracePixel ? 128 :  32; // G
-      imageBuffer.data[bufferIndex + 2] = isTracePixel ? 128 :  32; // B
-      imageBuffer.data[bufferIndex + 3] = 255;                      // A
+      imageBuffer.data[bufIdx + 0] = isTrace ? 255 :  32; // R
+      imageBuffer.data[bufIdx + 1] = isTrace ? 128 :  32; // G
+      imageBuffer.data[bufIdx + 2] = isTrace ? 128 :  32; // B
+      imageBuffer.data[bufIdx + 3] = 255;                 // A
     }
   }
-  canvasContext.putImageData(imageBuffer, 0, 0);
+  ctx.putImageData(imageBuffer, 0, 0);
 }
 
-/* ======================================================================= *
- *  SECTION 4 – Source pulse definition                                    *
- * ======================================================================= *
- *  A single-cycle spatially centred Gaussian pulse excites the ring once. */
-const SOURCE_CELL_INDEX         = Math.floor(GRID_CELL_COUNT / 2);
-const GAUSSIAN_PULSE_PEAK_TIME  = 30;  // ticks until the pulse peaks
-const GAUSSIAN_PULSE_STDDEV     =  8;  // width of the pulse envelope
+/* ════════════════════════════════════════════════════════════════════════
+ * SECTION 4 – Right-going soft source (TF/SF)
+ * ═════════════════════════════════════════════════════════════════════
+ * We inject a single *right-propagating* Gaussian wave by overwriting
+ * the analytic Ez and Hy values at one Yee cell pair each tick.
+ * That avoids the left-/right-split seen with the old additive source. */
+const SOURCE_CELL_INDEX        = Math.floor(GRID_CELL_COUNT / 2);
+const GAUSS_PEAK_TIME          = 30;  // tick # at which pulse has maximum amplitude
+const GAUSS_STDDEV             =  8;  // temporal width of the pulse envelope
 
 /**
- * Compute the magnitude of the Gaussian pulse at global time index 't'.
- * Formula:  exp( -½ ((t - t0)/σ)² )
+ * Return the value of a unit-amplitude Gaussian pulse at global time t.
+ * f(t) = exp[ -½ ((t - t₀)/σ)² ]
  */
-function gaussianPulse (timeStep) {
-  const normalisedTime = (timeStep - GAUSSIAN_PULSE_PEAK_TIME) / GAUSSIAN_PULSE_STDDEV;
-  return Math.exp(-0.5 * normalisedTime * normalisedTime);
+function gaussianPulse (timeTick) {
+  const tau = (timeTick - GAUSS_PEAK_TIME) / GAUSS_STDDEV;
+  return Math.exp(-0.5 * tau * tau);
 }
 
-/* ======================================================================= *
- *  SECTION 5 – Main simulation loop                                       *
- * ======================================================================= */
-let currentTick      = 0;   // how many steps have elapsed
-let simulationActive = true; // toggled by space-bar
+/* ════════════════════════════════════════════════════════════════════════
+ * SECTION 5 – Main simulation loop
+ * ═════════════════════════════════════════════════════════════════════ */
+let currentTick      = 0;
+let simulationActive = true;
 
 /**
- * Compute the next field values (one FDTD leap-frog step) with periodic
- * boundary conditions (left ↔ right).
+ * Perform one leap-frog time step with periodic boundary conditions.
  */
-function advanceSimulationOneStep () {
+function advanceOneTimeStep () {
 
-  /* ------------------------------------------------------------------- *
-   * 5.1 Update magnetic field Hy at half-integer timestep n + ½          *
-   *     Hy_i^(n+½)  = Hy_i^(n-½)  +  (Ez_(i+1)^n − Ez_i^n) (Δt/Δx)       *
-   * ------------------------------------------------------------------- */
+  /* 5.1 — Update Hy at half-step n + ½
+   * Hy_i(n+½) = Hy_i(n-½) + (Ez_(i+1) – Ez_i) (Δt/Δx) */
   for (let i = 0; i < GRID_CELL_COUNT; ++i) {
-    const indexPlusOne = (i + 1) % GRID_CELL_COUNT;          // periodic wrap
-    magneticFieldY[i] += (electricFieldZ[indexPlusOne] - electricFieldZ[i])
+    const ip1 = (i + 1) % GRID_CELL_COUNT;              // wrap (ring)
+    magneticFieldY[i] += (electricFieldZ[ip1] - electricFieldZ[i])
                          * TIME_STEP / SPATIAL_STEP;
   }
 
-  /* Inject source pulse (split-field): half into Hy, full into Ez  */
-  const pulseAmplitude = gaussianPulse(currentTick);
-  magneticFieldY[(SOURCE_CELL_INDEX - 1 + GRID_CELL_COUNT) % GRID_CELL_COUNT] -= 0.5 * pulseAmplitude;
-  electricFieldZ[SOURCE_CELL_INDEX]                                             +=       pulseAmplitude;
+  /* 5.2 — Inject analytic right-going TEM plane wave (soft source).
+   * For vacuum, wave impedance η₀ ≈ 377 Ω → here set to 1 by normalisation. */
+  const pulse = gaussianPulse(currentTick);
+  electricFieldZ[SOURCE_CELL_INDEX]                                           =  pulse;    // Ez(k)
+  magneticFieldY[(SOURCE_CELL_INDEX - 1 + GRID_CELL_COUNT) % GRID_CELL_COUNT] =  pulse;    // Hy(k-1)
 
-  /* ------------------------------------------------------------------- *
-   * 5.2 Update electric field Ez at integer timestep n + 1              *
-   *     Ez_i^(n+1)  = Ez_i^n  +  (Hy_i^(n+½) − Hy_(i-1)^(n+½)) Δt/Δx     *
-   * ------------------------------------------------------------------- */
+  /* 5.3 — Update Ez at integer step n + 1
+   * Ez_i(n+1) = Ez_i(n) + (Hy_i – Hy_(i-1)) (Δt/Δx) */
   for (let i = 0; i < GRID_CELL_COUNT; ++i) {
-    const indexMinusOne = (i - 1 + GRID_CELL_COUNT) % GRID_CELL_COUNT;
-    electricFieldZ[i] += (magneticFieldY[i] - magneticFieldY[indexMinusOne])
+    const im1 = (i - 1 + GRID_CELL_COUNT) % GRID_CELL_COUNT;
+    electricFieldZ[i] += (magneticFieldY[i] - magneticFieldY[im1])
                          * TIME_STEP / SPATIAL_STEP;
   }
 }
 
 /**
- * Animation frame callback – executes exactly once per display refresh when
- * the simulation is running.  No nested requestAnimationFrame() calls occur
- * while paused, so speed remains constant when resuming.
+ * Animation callback. Runs exactly once per display frame while
+ * simulationActive === true. No excess callbacks accumulate when paused.
  */
-function animationFrameCallback () {
-  if (!simulationActive) return;           // paused → exit early
+function animationFrame () {
+  if (!simulationActive) return;             // paused → exit
 
   if (currentTick < MAX_STEPS) {
-    advanceSimulationOneStep();
+    advanceOneTimeStep();
     renderElectricField();
     ++currentTick;
-    requestAnimationFrame(animationFrameCallback);
+    requestAnimationFrame(animationFrame);
   }
 }
 
-/* Kick-start the process */
-requestAnimationFrame(animationFrameCallback);
+/* Initial kick-off */
+requestAnimationFrame(animationFrame);
 
-/* ======================================================================= *
- *  SECTION 6 – Keyboard control handler                                   *
- * ======================================================================= */
+/* ════════════════════════════════════════════════════════════════════════
+ * SECTION 6 – Keyboard control
+ * ═════════════════════════════════════════════════════════════════════ */
 window.addEventListener('keydown', event => {
   if (event.code === 'Space') {
     simulationActive = !simulationActive;
-    if (simulationActive) {
-      /* Resume: queue exactly one new animation frame */
-      requestAnimationFrame(animationFrameCallback);
-    }
+    if (simulationActive) requestAnimationFrame(animationFrame);
   }
 });
 </script>
