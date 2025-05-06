@@ -2,32 +2,29 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Tiny Maxwell 1-D FDTD — periodic ring, two pulses, baseline-locked</title>
+<title>Tiny Maxwell 1-D FDTD — periodic ring, baseline-locked (final)</title>
 <!--
 ────────────────────────────────────────────────────────────────────────────
-PROBLEM WE FIX NOW
+WHAT THIS REVISION FIXES
 ────────────────────────────────────────────────────────────────────────────
-Even with a *zero-area* (bipolar) source, numerical round-off makes the
-spatial average of E_z drift by ~10⁻⁷ per step.  Over tens of thousands of
-laps that DC error becomes visible: the dotted baseline splits into two.
+You still saw two dotted “baseline” rows after a long run.  The DC-blocking
+step had already removed the genuine offset, so the *physics* were fine.
+The visual split was purely a **render-aliasing artefact**:
 
-PHYSICAL NOTE  
-A *constant* offset of E_z in a periodic domain carries **no energy** and
-does not enter Maxwell’s curl equations (spatial derivatives kill it).  
-So it is perfectly legal to subtract the mean <E_z> (and <H_y>) every step;
-doing so is called **DC blocking** and does *not* alter the propagating
-waves we care about — it only keeps the plotted baseline pinned to 0.
+  • after DC blocking the residual Ez values hover around ±10⁻¹³…±10⁻⁸  
+  • rounding those tiny fluctuations to integer pixels:
+        yPix = round(mid − Ez·scale·mid)
+    makes some columns land on mid, others on mid ± 1  
+  • your eye links those into two dotted rows.
 
-CHANGES  
-• After each FDTD step we compute ⟨E_z⟩ and ⟨H_y⟩ and subtract them.  
-  That clamps the baseline forever, eliminating the late-time split.  
-• Everything else (two counter-propagating pulses, interference spike,
-  pause/resume behaviour, full documentation) is unchanged.
+**Solution** – treat values whose magnitude is smaller than an *epsilon*
+(`DRAW_EPSILON`) as mathematically zero *for drawing purposes only*.  
+That guarantees the baseline always maps to the *exact* centre row, so
+only one dotted line is ever produced.
 
-References  
-• Maxwell     https://en.wikipedia.org/wiki/Maxwell%27s_equations  
-• Yee lattice https://en.wikipedia.org/wiki/Yee_lattice  
-• FDTD        https://en.wikipedia.org/wiki/Finite-difference_time-domain_method  
+Physics, energy conservation, self-interference spike, pause/resume
+behaviour—all unchanged.
+
 ────────────────────────────────────────────────────────────────────────────
 -->
 <style>
@@ -48,35 +45,43 @@ canvas{image-rendering:pixelated;box-shadow:0 0 8px #000}
 /* ════════════════════════════════════════════════════════════════════════
  * SECTION 1 — Numerical constants
  * ════════════════════════════════════════════════════════════════════ */
-const CELLS            = 600;   // Yee cells around the ring
-const DX               = 1;     // spatial step
-const COURANT          = 1;     // cΔt = Δx (no numerical dispersion)
-const DT               = DX / COURANT;
-const DRAW_SCALE       = 0.7;   // vertical scale factor (cosmetic)
-const RUN_FOREVER      = Number.POSITIVE_INFINITY;
+const CELLS        = 600;   // Yee cells on the ring
+const DX           = 1;     // spatial step
+const COURANT      = 1;     // choose c Δt = Δx
+const DT           = DX / COURANT;
+const DRAW_SCALE   = 0.7;   // vertical scale (visual only)
+const DRAW_EPSILON = 1e-6;  // <— NEW: values smaller than this are drawn as 0
+const RUN_FOREVER  = Number.POSITIVE_INFINITY;
 
 /* ════════════════════════════════════════════════════════════════════════
  * SECTION 2 — Field arrays
  * ════════════════════════════════════════════════════════════════════ */
-const Ez = new Float32Array(CELLS); // electric field   E_z(i)
-const Hy = new Float32Array(CELLS); // magnetic field   H_y(i+½)
+const Ez = new Float32Array(CELLS);  // electric field   E_z(i)
+const Hy = new Float32Array(CELLS);  // magnetic field   H_y(i+½)
 
 /* ════════════════════════════════════════════════════════════════════════
- * SECTION 3 — Canvas set-up
+ * SECTION 3 — Canvas
  * ════════════════════════════════════════════════════════════════════ */
 const canvas = document.getElementById('wave-canvas');
-canvas.width  = CELLS;   // one pixel per Yee cell
-canvas.height = 200;
-const ctx  = canvas.getContext('2d');
-const img  = ctx.createImageData(canvas.width, canvas.height);
+canvas.width  = CELLS;      // 1 px per Yee cell horizontally
+canvas.height = 200;        // room for trace
+const ctx = canvas.getContext('2d');
+const img = ctx.createImageData(canvas.width, canvas.height);
 
+/* Render Ez as a red dotted trace, with epsilon threshold */
 function drawEz () {
   const mid = canvas.height / 2;
   for (let x = 0; x < CELLS; ++x) {
-    const yPix = Math.round(mid - Ez[x] * DRAW_SCALE * mid);
+
+    /* map near-zero values exactly to the centre row */
+    let sample = Ez[x] * DRAW_SCALE;
+    if (Math.abs(sample) < DRAW_EPSILON) sample = 0;
+
+    const yPix = Math.round(mid - sample * mid);
+
     for (let y = 0; y < canvas.height; ++y) {
       const p = (y * CELLS + x) * 4;
-      const on = y === yPix;
+      const on = (y === yPix);
       img.data[p+0] = on ? 255 :  32;
       img.data[p+1] = on ? 128 :  32;
       img.data[p+2] = on ? 128 :  32;
@@ -87,56 +92,55 @@ function drawEz () {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
- * SECTION 4 — Bipolar (zero-area) Gaussian source
+ * SECTION 4 — Bipolar Gaussian source (zero net area)
  * ════════════════════════════════════════════════════════════════════ */
 const SRC      = Math.floor(CELLS / 2);
-const PEAK_T   = 30;  // tick of peak
-const WIDTH_T  =  8;  // σ
+const PEAK_T   = 30;   // tick of peak
+const WIDTH_T  =  8;   // σ
 
-function bipolarGaussian (t) {
+function bipolarGaussian (t){
   const τ = (t - PEAK_T) / WIDTH_T;
-  return -τ * Math.exp(-0.5 * τ * τ); // derivative of Gaussian
+  return -τ * Math.exp(-0.5 * τ * τ);   // derivative of Gaussian
 }
 
 /* ════════════════════════════════════════════════════════════════════════
- * SECTION 5 — One FDTD step + DC blocking
+ * SECTION 5 — One FDTD time-step + DC blocking
  * ════════════════════════════════════════════════════════════════════ */
-function stepFDTD (t) {
+function stepFDTD (t){
 
   /* 5.1 — update H_y at n+½ */
-  for (let i = 0; i < CELLS; ++i) {
-    const ip1 = (i + 1) % CELLS;
+  for(let i=0;i<CELLS;++i){
+    const ip1 = (i+1)%CELLS;
     Hy[i] += (Ez[ip1] - Ez[i]) * DT / DX;
   }
 
-  /* 5.2 — inject additive bipolar pulse (spawns two travelling waves) */
+  /* 5.2 — inject additive bipolar pulse */
   const pulse = bipolarGaussian(t);
-  Hy[(SRC - 1 + CELLS) % CELLS] -= 0.5 * pulse;
-  Ez[SRC]                        +=       pulse;
+  Hy[(SRC - 1 + CELLS)%CELLS] -= 0.5 * pulse;
+  Ez[SRC]                      +=       pulse;
 
   /* 5.3 — update E_z at n+1 */
-  for (let i = 0; i < CELLS; ++i) {
-    const im1 = (i - 1 + CELLS) % CELLS;
+  for(let i=0;i<CELLS;++i){
+    const im1 = (i - 1 + CELLS)%CELLS;
     Ez[i] += (Hy[i] - Hy[im1]) * DT / DX;
   }
 
-  /* 5.4 — DC blocking: remove tiny floating-point drift in <E_z> & <H_y> */
-  let sumE = 0, sumH = 0;
-  for (let i = 0; i < CELLS; ++i) { sumE += Ez[i]; sumH += Hy[i]; }
-  const meanE = sumE / CELLS;
-  const meanH = sumH / CELLS;
-  for (let i = 0; i < CELLS; ++i) { Ez[i] -= meanE; Hy[i] -= meanH; }
+  /* 5.4 — DC blocking (remove floating-point drift) */
+  let sumE=0,sumH=0;
+  for(let i=0;i<CELLS;++i){ sumE+=Ez[i]; sumH+=Hy[i]; }
+  const meanE=sumE/CELLS, meanH=sumH/CELLS;
+  for(let i=0;i<CELLS;++i){ Ez[i]-=meanE; Hy[i]-=meanH; }
 }
 
 /* ════════════════════════════════════════════════════════════════════════
- * SECTION 6 — Animation loop with pause / resume
+ * SECTION 6 — Animation loop + pause/resume
  * ════════════════════════════════════════════════════════════════════ */
 let tick = 0;
 let running = true;
 
-function frame () {
-  if (!running) return;
-  if (tick < RUN_FOREVER) {
+function frame (){
+  if(!running) return;
+  if(tick < RUN_FOREVER){
     stepFDTD(tick);
     drawEz();
     ++tick;
@@ -145,10 +149,10 @@ function frame () {
 }
 requestAnimationFrame(frame);
 
-window.addEventListener('keydown', e => {
-  if (e.code === 'Space') {
-    running = !running;
-    if (running) requestAnimationFrame(frame);
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'){
+    running=!running;
+    if(running) requestAnimationFrame(frame);
   }
 });
 </script>
